@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MediStock Lite</title>
+  <title>MediStock Pro</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -13,16 +13,18 @@
   <aside class="sidebar">
     <a class="sidebar-logo" href="#" data-page-link="dashboard">
       <div class="logo-icon">💊</div>
-      <div class="logo-text">Medi<span>Stock</span></div>
+      <div class="logo-text">Medi<span>Stock</span> Pro</div>
     </a>
     <nav class="sidebar-nav">
       <div class="nav-section-title">Overview</div>
       <button class="nav-item active" data-page-link="dashboard"><span class="nav-icon">📊</span>Dashboard</button>
+      <button class="nav-item" data-page-link="reports"><span class="nav-icon">📈</span>Profit Reports</button>
       <div class="nav-section-title">Management</div>
       <button class="nav-item" data-page-link="manufacturers"><span class="nav-icon">🏭</span>Manufacturers</button>
       <button class="nav-item" data-page-link="medicines"><span class="nav-icon">💉</span>Medicines</button>
       <button class="nav-item" data-page-link="purchases"><span class="nav-icon">🛒</span>Purchases</button>
       <button class="nav-item" data-page-link="sales"><span class="nav-icon">💰</span>Sales</button>
+      <button class="nav-item" data-page-link="writeoffs"><span class="nav-icon">🗑️</span>Discard / Write-off</button>
     </nav>
   </aside>
 
@@ -32,7 +34,7 @@
         <div class="topbar-title" id="pageTitle">Dashboard</div>
         <div class="topbar-date" id="topbarDate"></div>
       </div>
-      <div class="pill">Live inventory</div>
+      <div class="pill">Live inventory & profit insights</div>
     </header>
 
     <section class="content">
@@ -42,18 +44,20 @@
           <div class="stat-card info"><div class="stat-label">Manufacturers</div><div class="stat-value" id="statManufacturers">0</div></div>
           <div class="stat-card success"><div class="stat-label">Units In Stock</div><div class="stat-value" id="statUnits">0</div></div>
           <div class="stat-card warning"><div class="stat-label">Low Stock</div><div class="stat-value" id="statLow">0</div></div>
-          <div class="stat-card danger"><div class="stat-label">Out of Stock</div><div class="stat-value" id="statOut">0</div></div>
-          <div class="stat-card warning"><div class="stat-label">Near Expiry</div><div class="stat-value" id="statNearExpiry">0</div></div>
           <div class="stat-card danger"><div class="stat-label">Expired Batches</div><div class="stat-value" id="statExpired">0</div></div>
+          <div class="stat-card warning"><div class="stat-label">Near Expiry (30d)</div><div class="stat-value" id="statNearExpiry">0</div></div>
           <div class="stat-card"><div class="stat-label">Today's Sales</div><div class="stat-value mono" id="statTodaySales">₹0.00</div><div class="stat-sub" id="statTodayUnits">0 units sold</div></div>
           <div class="stat-card success"><div class="stat-label">Today's Profit</div><div class="stat-value mono" id="statTodayProfit">₹0.00</div></div>
-          <div class="stat-card info"><div class="stat-label">Stock Value</div><div class="stat-value mono" id="statStockValue">₹0.00</div></div>
+          <div class="stat-card info"><div class="stat-label">Last Week Profit</div><div class="stat-value mono" id="statLastWeekProfit">₹0.00</div></div>
+          <div class="stat-card info"><div class="stat-label">Last Month Profit</div><div class="stat-value mono" id="statLastMonthProfit">₹0.00</div></div>
+          <div class="stat-card success"><div class="stat-label">Stock Value (Cost)</div><div class="stat-value mono" id="statStockValue">₹0.00</div></div>
+          <div class="stat-card danger"><div class="stat-label">Expired Stock Value</div><div class="stat-value mono" id="statExpiredValue">₹0.00</div><div class="stat-sub" id="statWriteoffLoss">Today's write-off loss ₹0.00</div></div>
         </div>
 
         <div class="grid-2">
           <section class="panel">
             <div class="panel-header"><div class="panel-title">Low Stock Medicines</div></div>
-            <div class="table-wrap"><table><thead><tr><th>Medicine</th><th>Manufacturer</th><th>Stock</th></tr></thead><tbody id="lowStockTable"></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>Medicine</th><th>Manufacturer</th><th>Stock</th><th>Reorder</th></tr></thead><tbody id="lowStockTable"></tbody></table></div>
           </section>
           <section class="panel">
             <div class="panel-header"><div class="panel-title">Near Expiry Batches</div></div>
@@ -63,91 +67,98 @@
 
         <div class="grid-2">
           <section class="panel">
-            <div class="panel-header"><div class="panel-title">Recent Purchases</div></div>
-            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Medicine</th><th>Batch</th><th>Qty</th></tr></thead><tbody id="recentPurchasesTable"></tbody></table></div>
+            <div class="panel-header"><div class="panel-title">Expired Batches Pending Discard</div></div>
+            <div class="table-wrap"><table><thead><tr><th>Medicine</th><th>Batch</th><th>Qty</th><th>Loss</th></tr></thead><tbody id="expiredBatchesTable"></tbody></table></div>
           </section>
           <section class="panel">
-            <div class="panel-header"><div class="panel-title">Recent Sales</div></div>
-            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Medicine</th><th>Batch</th><th>Value</th></tr></thead><tbody id="recentSalesTable"></tbody></table></div>
+            <div class="panel-header"><div class="panel-title">Recent Write-offs</div></div>
+            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Medicine</th><th>Reason</th><th>Loss</th></tr></thead><tbody id="recentWriteOffsTable"></tbody></table></div>
+          </section>
+        </div>
+
+        <div class="grid-2">
+          <section class="panel">
+            <div class="panel-header"><div class="panel-title">Top Medicines by Profit (Last 30 Days)</div></div>
+            <div class="table-wrap"><table><thead><tr><th>Medicine</th><th>Units</th><th>Profit</th></tr></thead><tbody id="topMedicinesTable"></tbody></table></div>
+          </section>
+          <section class="panel">
+            <div class="panel-header"><div class="panel-title">Quick Actions</div></div>
+            <div class="panel-body quick-actions">
+              <button class="btn btn-primary" data-page-link="purchases">Register Purchase</button>
+              <button class="btn btn-primary" data-page-link="sales">Register Sale</button>
+              <button class="btn btn-secondary" data-page-link="writeoffs">Discard Expired Stock</button>
+              <button class="btn btn-secondary" data-page-link="reports">Open Profit Report</button>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div class="page" id="page-reports">
+        <div class="panel">
+          <div class="panel-header"><div class="panel-title">Profit Reports</div></div>
+          <div class="panel-body">
+            <form id="reportForm" class="form-grid report-form">
+              <label><span>Preset</span>
+                <select id="reportPreset">
+                  <option value="today">Today</option>
+                  <option value="last7">Last 7 Days</option>
+                  <option value="monthToDate">Month to Date</option>
+                  <option value="lastWeek">Last Week</option>
+                  <option value="lastMonth">Last Month</option>
+                  <option value="custom">Custom Range</option>
+                </select>
+              </label>
+              <label><span>From</span><input type="date" id="reportFrom" required></label>
+              <label><span>To</span><input type="date" id="reportTo" required></label>
+              <button class="btn btn-primary" type="submit">Load Report</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="stat-grid compact">
+          <div class="stat-card"><div class="stat-label">Sales Amount</div><div class="stat-value mono" id="reportSales">₹0.00</div></div>
+          <div class="stat-card info"><div class="stat-label">COGS</div><div class="stat-value mono" id="reportCogs">₹0.00</div></div>
+          <div class="stat-card success"><div class="stat-label">Gross Profit</div><div class="stat-value mono" id="reportProfit">₹0.00</div></div>
+          <div class="stat-card warning"><div class="stat-label">Write-off Loss</div><div class="stat-value mono" id="reportWriteoff">₹0.00</div></div>
+          <div class="stat-card"><div class="stat-label">Units Sold</div><div class="stat-value" id="reportUnits">0</div></div>
+          <div class="stat-card"><div class="stat-label">Entries</div><div class="stat-value" id="reportEntries">0</div></div>
+        </div>
+
+        <div class="grid-2">
+          <section class="panel">
+            <div class="panel-header"><div class="panel-title">Profit by Medicine</div></div>
+            <div class="table-wrap"><table><thead><tr><th>Medicine</th><th>Units</th><th>Sales</th><th>Profit</th></tr></thead><tbody id="reportMedicineTable"></tbody></table></div>
+          </section>
+          <section class="panel">
+            <div class="panel-header"><div class="panel-title">Daily Trend</div></div>
+            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Units</th><th>Sales</th><th>Profit</th></tr></thead><tbody id="reportDailyTable"></tbody></table></div>
           </section>
         </div>
       </div>
 
       <div class="page" id="page-manufacturers">
-        <div class="panel">
-          <div class="panel-header"><div class="panel-title">Create Manufacturer</div></div>
-          <div class="panel-body">
-            <form id="manufacturerForm" class="form-grid one-col">
-              <label><span>Name</span><input required name="name" placeholder="Example: Cipla" /></label>
-              <button class="btn btn-primary" type="submit">Save Manufacturer</button>
-            </form>
-          </div>
-        </div>
-        <div class="panel">
-          <div class="panel-header"><div class="panel-title">Manufacturers</div></div>
-          <div class="table-wrap"><table><thead><tr><th>Name</th><th>Created</th></tr></thead><tbody id="manufacturersTable"></tbody></table></div>
-        </div>
+        <div class="panel"><div class="panel-header"><div class="panel-title">Create Manufacturer</div></div><div class="panel-body"><form id="manufacturerForm" class="form-grid one-col"><label><span>Name</span><input required name="name" placeholder="Example: Cipla" /></label><button class="btn btn-primary" type="submit">Save Manufacturer</button></form></div></div>
+        <div class="panel"><div class="panel-header"><div class="panel-title">Manufacturers</div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Created</th></tr></thead><tbody id="manufacturersTable"></tbody></table></div></div>
       </div>
 
       <div class="page" id="page-medicines">
-        <div class="panel">
-          <div class="panel-header"><div class="panel-title">Create Medicine</div></div>
-          <div class="panel-body">
-            <form id="medicineForm" class="form-grid">
-              <label><span>Manufacturer</span><select required name="manufacturer_id" id="medicineManufacturer"></select></label>
-              <label><span>Medicine Name</span><input required name="name" placeholder="Paracetamol" /></label>
-              <label><span>Strength</span><input name="strength" placeholder="500 mg" /></label>
-              <label><span>Form</span><input name="form" placeholder="Tablet / Syrup / Capsule" /></label>
-              <button class="btn btn-primary" type="submit">Save Medicine</button>
-            </form>
-          </div>
-        </div>
-        <div class="panel">
-          <div class="panel-header"><div class="panel-title">Medicine Inventory</div></div>
-          <div class="table-wrap"><table><thead><tr><th>Medicine</th><th>Manufacturer</th><th>Stock</th><th>Batches</th><th>Nearest Expiry</th></tr></thead><tbody id="medicinesTable"></tbody></table></div>
-        </div>
+        <div class="panel"><div class="panel-header"><div class="panel-title">Create Medicine</div></div><div class="panel-body"><form id="medicineForm" class="form-grid"><label><span>Manufacturer</span><select required name="manufacturer_id" id="medicineManufacturer"></select></label><label><span>Medicine Name</span><input required name="name" placeholder="Paracetamol" /></label><label><span>Strength</span><input name="strength" placeholder="500 mg" /></label><label><span>Form</span><input name="form" placeholder="Tablet / Syrup / Capsule" /></label><label><span>Reorder Level</span><input name="reorder_level" type="number" min="0" value="20" /></label><button class="btn btn-primary" type="submit">Save Medicine</button></form></div></div>
+        <div class="panel"><div class="panel-header"><div class="panel-title">Medicine Inventory</div></div><div class="table-wrap"><table><thead><tr><th>Medicine</th><th>Manufacturer</th><th>Stock</th><th>Status</th><th>Nearest Expiry</th></tr></thead><tbody id="medicinesTable"></tbody></table></div></div>
       </div>
 
       <div class="page" id="page-purchases">
-        <div class="panel">
-          <div class="panel-header"><div class="panel-title">Register Purchase</div></div>
-          <div class="panel-body">
-            <form id="purchaseForm" class="form-grid">
-              <label><span>Medicine</span><select required name="medicine_id" id="purchaseMedicine"></select></label>
-              <label><span>Batch Number</span><input required name="batch_number" placeholder="PCM-2403" /></label>
-              <label><span>Expiry Date</span><input required type="date" name="expiry_date" /></label>
-              <label><span>Purchased On</span><input required type="date" name="purchased_on" /></label>
-              <label><span>Cost Price</span><input required type="number" step="0.01" min="0.01" name="cost_price" /></label>
-              <label><span>MRP</span><input required type="number" step="0.01" min="0.01" name="mrp" /></label>
-              <label><span>Total Units Purchased</span><input required type="number" min="1" name="quantity_purchased" /></label>
-              <button class="btn btn-primary" type="submit">Save Purchase</button>
-            </form>
-          </div>
-        </div>
-        <div class="panel">
-          <div class="panel-header"><div class="panel-title">Purchases</div></div>
-          <div class="table-wrap"><table><thead><tr><th>Date</th><th>Medicine</th><th>Manufacturer</th><th>Batch</th><th>Expiry</th><th>Cost</th><th>MRP</th><th>Purchased</th><th>Available</th></tr></thead><tbody id="purchasesTable"></tbody></table></div>
-        </div>
+        <div class="panel"><div class="panel-header"><div class="panel-title">Register Purchase</div></div><div class="panel-body"><form id="purchaseForm" class="form-grid"><label><span>Medicine</span><select required name="medicine_id" id="purchaseMedicine"></select></label><label><span>Batch Number</span><input required name="batch_number" placeholder="PCM-2403" /></label><label><span>Expiry Date</span><input required type="date" name="expiry_date" /></label><label><span>Purchased On</span><input required type="date" name="purchased_on" /></label><label><span>Cost Price</span><input required type="number" step="0.01" min="0.01" name="cost_price" /></label><label><span>MRP</span><input required type="number" step="0.01" min="0.01" name="mrp" /></label><label><span>Total Units Purchased</span><input required type="number" min="1" name="quantity_purchased" /></label><button class="btn btn-primary" type="submit">Save Purchase</button></form></div></div>
+        <div class="panel"><div class="panel-header"><div class="panel-title">Purchases</div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Medicine</th><th>Batch</th><th>Expiry</th><th>Cost</th><th>MRP</th><th>Purchased</th><th>Available</th></tr></thead><tbody id="purchasesTable"></tbody></table></div></div>
       </div>
 
       <div class="page" id="page-sales">
-        <div class="panel">
-          <div class="panel-header"><div class="panel-title">Register Sale</div></div>
-          <div class="panel-body">
-            <form id="saleForm" class="form-grid">
-              <label><span>Medicine</span><select required name="medicine_id" id="saleMedicine"></select></label>
-              <label><span>Batch</span><select required name="batch_id" id="saleBatch"></select></label>
-              <label><span>Sold On</span><input required type="date" name="sold_on" /></label>
-              <label><span>Total Units Sold</span><input required type="number" min="1" name="quantity_sold" /></label>
-              <div class="hint-card" id="batchHint">Select a medicine to auto-pick the batch closest to expiry.</div>
-              <button class="btn btn-primary" type="submit">Save Sale</button>
-            </form>
-          </div>
-        </div>
-        <div class="panel">
-          <div class="panel-header"><div class="panel-title">Sales</div></div>
-          <div class="table-wrap"><table><thead><tr><th>Date</th><th>Medicine</th><th>Manufacturer</th><th>Batch</th><th>Qty</th><th>Rate</th><th>Value</th><th>Profit</th></tr></thead><tbody id="salesTable"></tbody></table></div>
-        </div>
+        <div class="panel"><div class="panel-header"><div class="panel-title">Register Sale</div></div><div class="panel-body"><form id="saleForm" class="form-grid"><label><span>Medicine</span><select required name="medicine_id" id="saleMedicine"></select></label><label><span>Batch</span><select required name="batch_id" id="saleBatch"></select></label><label><span>Sold On</span><input required type="date" name="sold_on" /></label><label><span>Total Units Sold</span><input required type="number" min="1" name="quantity_sold" /></label><div class="hint-card" id="batchHint">Select a medicine to auto-pick the batch closest to expiry.</div><button class="btn btn-primary" type="submit">Save Sale</button></form></div></div>
+        <div class="panel"><div class="panel-header"><div class="panel-title">Sales</div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Medicine</th><th>Batch</th><th>Qty</th><th>Value</th><th>Profit</th></tr></thead><tbody id="salesTable"></tbody></table></div></div>
+      </div>
+
+      <div class="page" id="page-writeoffs">
+        <div class="panel"><div class="panel-header"><div class="panel-title">Discard / Write-off Stock</div></div><div class="panel-body"><form id="writeoffForm" class="form-grid"><label><span>Medicine</span><select required name="medicine_id" id="writeoffMedicine"></select></label><label><span>Batch</span><select required name="batch_id" id="writeoffBatch"></select></label><label><span>Discarded On</span><input required type="date" name="discarded_on" /></label><label><span>Units Discarded</span><input required type="number" min="1" name="quantity_discarded" /></label><label><span>Reason</span><select required name="reason"><option value="Expired">Expired</option><option value="Damaged">Damaged</option><option value="Missing">Missing</option><option value="Adjustment">Adjustment</option></select></label><label><span>Notes</span><input name="notes" placeholder="Optional notes" /></label><div class="hint-card" id="writeoffHint">Select a medicine to pick a batch for discard or adjustment.</div><button class="btn btn-primary" type="submit">Save Write-off</button></form></div></div>
+        <div class="panel"><div class="panel-header"><div class="panel-title">Write-off Ledger</div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Medicine</th><th>Batch</th><th>Reason</th><th>Qty</th><th>Loss</th></tr></thead><tbody id="writeoffsTable"></tbody></table></div></div>
       </div>
     </section>
   </main>
