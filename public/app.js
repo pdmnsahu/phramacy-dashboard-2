@@ -34,7 +34,7 @@ function showToast(message, isError = false) {
   el.style.background = isError ? '#b91c1c' : '#0f172a';
   el.classList.add('show');
   clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => el.classList.remove('show'), 2600);
+  showToast._t = setTimeout(() => el.classList.remove('show'), 2800);
 }
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -97,22 +97,26 @@ function fillMedicineSelects() {
   $('#saleMedicine').innerHTML = options;
   $('#writeoffMedicine').innerHTML = options;
 }
+function actionButtons(kind, id) {
+  return `<div class="table-actions"><button class="btn btn-ghost btn-xs" data-action="edit-${kind}" data-id="${id}">Edit</button><button class="btn btn-danger btn-xs" data-action="delete-${kind}" data-id="${id}">Delete</button></div>`;
+}
 
 function renderManufacturers() {
-  renderSimpleRows($('#manufacturersTable'), state.manufacturers, 2, (item) => `<tr><td>${escapeHtml(item.name)}</td><td>${fmtDate(item.created_at.slice(0,10))}</td></tr>`);
+  renderSimpleRows($('#manufacturersTable'), state.manufacturers, 3, (item) => `<tr><td>${escapeHtml(item.name)}</td><td>${fmtDate(item.created_at.slice(0,10))}</td><td>${actionButtons('manufacturer', item.id)}</td></tr>`);
 }
 function renderMedicines() {
-  renderSimpleRows($('#medicinesTable'), state.medicines, 5, (item) => `
+  renderSimpleRows($('#medicinesTable'), state.medicines, 6, (item) => `
     <tr>
       <td>${escapeHtml(fullMedicineName(item))}</td>
       <td>${escapeHtml(item.manufacturer_name)}</td>
       <td>${item.total_stock}</td>
       <td>${item.stock_status === 'out' ? badge('Out of stock', 'danger') : item.stock_status === 'low' ? badge(`Low (≤ ${item.reorder_level})`, 'warning') : badge('Healthy', 'success')}</td>
       <td>${fmtDate(item.nearest_expiry)}</td>
+      <td>${actionButtons('medicine', item.id)}</td>
     </tr>`);
 }
 function renderPurchases() {
-  renderSimpleRows($('#purchasesTable'), state.purchases, 8, (item) => `
+  renderSimpleRows($('#purchasesTable'), state.purchases, 9, (item) => `
     <tr>
       <td>${fmtDate(item.purchased_on)}</td>
       <td>${escapeHtml(fullMedicineName(item))}</td>
@@ -122,10 +126,11 @@ function renderPurchases() {
       <td>${fmtCurrency(item.mrp)}</td>
       <td>${item.quantity_purchased}</td>
       <td>${item.quantity_available}</td>
+      <td>${actionButtons('purchase', item.id)}</td>
     </tr>`);
 }
 function renderSales() {
-  renderSimpleRows($('#salesTable'), state.sales, 6, (item) => `
+  renderSimpleRows($('#salesTable'), state.sales, 7, (item) => `
     <tr>
       <td>${fmtDate(item.sold_on)}</td>
       <td>${escapeHtml(fullMedicineName(item))}</td>
@@ -133,10 +138,11 @@ function renderSales() {
       <td>${item.quantity_sold}</td>
       <td>${fmtCurrency(item.sale_value)}</td>
       <td>${fmtCurrency(item.profit)}</td>
+      <td>${actionButtons('sale', item.id)}</td>
     </tr>`);
 }
 function renderWriteoffs() {
-  renderSimpleRows($('#writeoffsTable'), state.writeoffs, 6, (item) => `
+  renderSimpleRows($('#writeoffsTable'), state.writeoffs, 7, (item) => `
     <tr>
       <td>${fmtDate(item.discarded_on)}</td>
       <td>${escapeHtml(fullMedicineName(item))}</td>
@@ -144,6 +150,7 @@ function renderWriteoffs() {
       <td>${escapeHtml(item.reason)}</td>
       <td>${item.quantity_discarded}</td>
       <td>${fmtCurrency(item.loss_value)}</td>
+      <td>${actionButtons('writeoff', item.id)}</td>
     </tr>`);
 }
 
@@ -259,11 +266,149 @@ async function loadReportFromForm() {
   }
 }
 
+async function promptEditManufacturer(id) {
+  const item = state.manufacturers.find((x) => x.id === id);
+  if (!item) return;
+  const name = prompt('Manufacturer name', item.name);
+  if (name === null) return;
+  await api(`/api/manufacturers/${id}`, { method: 'PUT', body: JSON.stringify({ name: name.trim() }) });
+}
+async function promptEditMedicine(id) {
+  const item = state.medicines.find((x) => x.id === id);
+  if (!item) return;
+  const manufacturerId = prompt(`Manufacturer ID\n${state.manufacturers.map((m) => `${m.id}: ${m.name}`).join('\n')}`, item.manufacturer_id);
+  if (manufacturerId === null) return;
+  const name = prompt('Medicine name', item.name);
+  if (name === null) return;
+  const strength = prompt('Strength', item.strength || '');
+  if (strength === null) return;
+  const form = prompt('Form', item.form || '');
+  if (form === null) return;
+  const reorderLevel = prompt('Reorder level', item.reorder_level);
+  if (reorderLevel === null) return;
+  await api(`/api/medicines/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ manufacturer_id: Number(manufacturerId), name: name.trim(), strength: strength.trim(), form: form.trim(), reorder_level: Number(reorderLevel) })
+  });
+}
+async function promptEditPurchase(id) {
+  const item = state.purchases.find((x) => x.id === id);
+  if (!item) return;
+  const medicineId = prompt(`Medicine ID\n${state.medicines.map((m) => `${m.id}: ${fullMedicineName(m)} — ${m.manufacturer_name}`).join('\n')}`, item.medicine_id);
+  if (medicineId === null) return;
+  const batchNumber = prompt('Batch number', item.batch_number);
+  if (batchNumber === null) return;
+  const expiryDate = prompt('Expiry date (YYYY-MM-DD)', item.expiry_date);
+  if (expiryDate === null) return;
+  const purchasedOn = prompt('Purchased on (YYYY-MM-DD)', item.purchased_on);
+  if (purchasedOn === null) return;
+  const costPrice = prompt('Cost price', item.cost_price);
+  if (costPrice === null) return;
+  const mrp = prompt('MRP', item.mrp);
+  if (mrp === null) return;
+  const quantityPurchased = prompt('Total purchased quantity', item.quantity_purchased);
+  if (quantityPurchased === null) return;
+  await api(`/api/purchases/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      medicine_id: Number(medicineId),
+      batch_number: batchNumber.trim(),
+      expiry_date: expiryDate.trim(),
+      purchased_on: purchasedOn.trim(),
+      cost_price: Number(costPrice),
+      mrp: Number(mrp),
+      quantity_purchased: Number(quantityPurchased)
+    })
+  });
+}
+async function promptEditSale(id) {
+  const item = state.sales.find((x) => x.id === id);
+  if (!item) return;
+  const medicineId = prompt(`Medicine ID\n${state.medicines.map((m) => `${m.id}: ${fullMedicineName(m)} — ${m.manufacturer_name}`).join('\n')}`, item.medicine_id);
+  if (medicineId === null) return;
+  const batchInfo = await api(`/api/medicines/${Number(medicineId)}/sale-options`);
+  const batchId = prompt(`Batch ID\n${batchInfo.batches.filter((b) => !b.is_expired).map((b) => `${b.id}: ${b.batch_number} | exp ${b.expiry_date} | stock ${b.quantity_available}`).join('\n')}`, item.batch_id);
+  if (batchId === null) return;
+  const soldOn = prompt('Sold on (YYYY-MM-DD)', item.sold_on);
+  if (soldOn === null) return;
+  const quantitySold = prompt('Units sold', item.quantity_sold);
+  if (quantitySold === null) return;
+  await api(`/api/sales/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ medicine_id: Number(medicineId), batch_id: Number(batchId), sold_on: soldOn.trim(), quantity_sold: Number(quantitySold) })
+  });
+}
+async function promptEditWriteoff(id) {
+  const item = state.writeoffs.find((x) => x.id === id);
+  if (!item) return;
+  const medicineId = prompt(`Medicine ID\n${state.medicines.map((m) => `${m.id}: ${fullMedicineName(m)} — ${m.manufacturer_name}`).join('\n')}`, item.medicine_id);
+  if (medicineId === null) return;
+  const batchInfo = await api(`/api/medicines/${Number(medicineId)}/discard-options`);
+  const batchId = prompt(`Batch ID\n${batchInfo.batches.map((b) => `${b.id}: ${b.batch_number} | exp ${b.expiry_date} | stock ${b.quantity_available}`).join('\n')}`, item.batch_id);
+  if (batchId === null) return;
+  const discardedOn = prompt('Discarded on (YYYY-MM-DD)', item.discarded_on);
+  if (discardedOn === null) return;
+  const quantityDiscarded = prompt('Units discarded', item.quantity_discarded);
+  if (quantityDiscarded === null) return;
+  const reason = prompt('Reason', item.reason);
+  if (reason === null) return;
+  const notes = prompt('Notes', item.notes || '');
+  if (notes === null) return;
+  await api(`/api/write-offs/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ medicine_id: Number(medicineId), batch_id: Number(batchId), discarded_on: discardedOn.trim(), quantity_discarded: Number(quantityDiscarded), reason: reason.trim(), notes: notes.trim() })
+  });
+}
+async function deleteEntity(kind, id) {
+  const messages = {
+    manufacturer: 'Delete this manufacturer? This will fail if medicines are linked.',
+    medicine: 'Delete this medicine from master data? This will fail if purchases, sales or write-offs are linked.',
+    purchase: 'Delete this purchase batch? This will fail if sales or write-offs are linked.',
+    sale: 'Delete this sale entry and restore stock back to the batch?',
+    writeoff: 'Delete this write-off entry and restore stock back to the batch?'
+  };
+  if (!confirm(messages[kind] || 'Are you sure?')) return;
+  const paths = {
+    manufacturer: `/api/manufacturers/${id}`,
+    medicine: `/api/medicines/${id}`,
+    purchase: `/api/purchases/${id}`,
+    sale: `/api/sales/${id}`,
+    writeoff: `/api/write-offs/${id}`
+  };
+  await api(paths[kind], { method: 'DELETE' });
+}
+
 function bootNavigation() {
   document.querySelectorAll('[data-page-link]').forEach((btn) => btn.addEventListener('click', (e) => {
     e.preventDefault();
     setPage(btn.dataset.pageLink);
   }));
+}
+function bootTableActions() {
+  document.body.addEventListener('click', async (event) => {
+    const btn = event.target.closest('[data-action]');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    const action = btn.dataset.action;
+    try {
+      if (action === 'edit-manufacturer') await promptEditManufacturer(id);
+      if (action === 'edit-medicine') await promptEditMedicine(id);
+      if (action === 'edit-purchase') await promptEditPurchase(id);
+      if (action === 'edit-sale') await promptEditSale(id);
+      if (action === 'edit-writeoff') await promptEditWriteoff(id);
+      if (action === 'delete-manufacturer') await deleteEntity('manufacturer', id);
+      if (action === 'delete-medicine') await deleteEntity('medicine', id);
+      if (action === 'delete-purchase') await deleteEntity('purchase', id);
+      if (action === 'delete-sale') await deleteEntity('sale', id);
+      if (action === 'delete-writeoff') await deleteEntity('writeoff', id);
+      if (action.startsWith('edit-') || action.startsWith('delete-')) {
+        await refreshAll();
+        showToast('Changes saved instantly across the app.');
+      }
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
 }
 
 async function init() {
@@ -273,6 +418,7 @@ async function init() {
   $('#writeoffForm [name="discarded_on"]').value = today;
 
   bootNavigation();
+  bootTableActions();
   handleSubmit('#manufacturerForm', '/api/manufacturers', 'Manufacturer saved.');
   handleSubmit('#medicineForm', '/api/medicines', 'Medicine saved and thresholds updated.');
   handleSubmit('#purchaseForm', '/api/purchases', 'Purchase saved. Dashboard and stock updated instantly.');
