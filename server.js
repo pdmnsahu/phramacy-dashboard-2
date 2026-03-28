@@ -44,10 +44,7 @@ function previousMonthRange() {
   const now = new Date();
   const firstThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const lastPrevMonth = new Date(firstThisMonth.getTime() - 86400000);
-  return {
-    from: startOfMonth(lastPrevMonth),
-    to: endOfMonth(lastPrevMonth)
-  };
+  return { from: startOfMonth(lastPrevMonth), to: endOfMonth(lastPrevMonth) };
 }
 function previousWeekRange() {
   const thisWeekStart = startOfWeek(new Date());
@@ -63,6 +60,19 @@ function reportRangePresets() {
     lastWeek: previousWeekRange(),
     lastMonth: previousMonthRange()
   };
+}
+function badRequest(res, message, code = 400) {
+  return res.status(code).json({ error: message });
+}
+function parsePositiveNumber(value, label) {
+  const num = Number(value);
+  if (!(num > 0)) throw new Error(`${label} must be greater than zero.`);
+  return num;
+}
+function parseNonNegativeInt(value, label) {
+  const num = Number(value);
+  if (!Number.isInteger(num) || num < 0) throw new Error(`${label} must be a non-negative integer.`);
+  return num;
 }
 
 function initDb() {
@@ -178,9 +188,18 @@ function medicineRowSelect() {
     END AS stock_status
   `;
 }
-
+function getMedicineRow(id) {
+  return db.prepare(`
+    SELECT ${medicineRowSelect()}
+    FROM medicines m
+    JOIN manufacturers mf ON mf.id = m.manufacturer_id
+    LEFT JOIN purchase_batches pb ON pb.medicine_id = m.id
+    WHERE m.id = ?
+    GROUP BY m.id
+  `).get(id);
+}
 function getKpi(from, to) {
-  const row = db.prepare(`
+  return db.prepare(`
     SELECT
       COALESCE(ROUND(SUM(quantity_sold * unit_sale_price), 2), 0) AS sales_amount,
       COALESCE(ROUND(SUM(quantity_sold * unit_cost_price), 2), 0) AS cogs,
@@ -190,7 +209,54 @@ function getKpi(from, to) {
     FROM sales
     WHERE sold_on BETWEEN ? AND ?
   `).get(from, to);
+}
+function getManufacturerUsage(id) {
+  return db.prepare(`SELECT COUNT(*) AS medicine_count FROM medicines WHERE manufacturer_id = ?`).get(id);
+}
+function getMedicineUsage(id) {
+  return db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM purchase_batches WHERE medicine_id = ?) AS purchase_count,
+      (SELECT COUNT(*) FROM sales WHERE medicine_id = ?) AS sale_count,
+      (SELECT COUNT(*) FROM write_offs WHERE medicine_id = ?) AS writeoff_count
+  `).get(id, id, id);
+}
+function getBatchUsage(id) {
+  return db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM sales WHERE batch_id = ?) AS sale_count,
+      (SELECT COUNT(*) FROM write_offs WHERE batch_id = ?) AS writeoff_count
+  `).get(id, id);
+}
+function getBatch(id) {
+  return db.prepare('SELECT * FROM purchase_batches WHERE id = ?').get(id);
+}
+function getSale(id) {
+  return db.prepare('SELECT * FROM sales WHERE id = ?').get(id);
+}
+function getWriteoff(id) {
+  return db.prepare('SELECT * FROM write_offs WHERE id = ?').get(id);
+}
+function validateBatchForMedicine(batchId, medicineId) {
+  const batch = db.prepare('SELECT * FROM purchase_batches WHERE id = ? AND medicine_id = ?').get(batchId, medicineId);
+  if (!batch) throw new Error('Selected batch not found for the selected medicine.');
+  return batch;
+}
+function ensureManufacturerExists(id) {
+  const row = db.prepare('SELECT * FROM manufacturers WHERE id = ?').get(id);
+  if (!row) throw new Error('Selected manufacturer does not exist.');
   return row;
+}
+function ensureMedicineExists(id) {
+  const row = db.prepare('SELECT * FROM medicines WHERE id = ?').get(id);
+  if (!row) throw new Error('Selected medicine does not exist.');
+  return row;
+}
+function checkNoBatchDependencies(batchId, actionLabel) {
+  const usage = getBatchUsage(batchId);
+  if (usage.sale_count > 0 || usage.writeoff_count > 0) {
+    throw new Error(`Cannot ${actionLabel} this purchase batch because sales or write-offs are already linked to it.`);
+  }
 }
 
 app.get('/api/manufacturers', (req, res) => {
@@ -199,13 +265,39 @@ app.get('/api/manufacturers', (req, res) => {
 
 app.post('/api/manufacturers', (req, res) => {
   const name = String(req.body.name || '').trim();
-  if (!name) return res.status(400).json({ error: 'Manufacturer name is required.' });
+  if (!name) return badRequest(res, 'Manufacturer name is required.');
   try {
     const info = db.prepare('INSERT INTO manufacturers (name) VALUES (?)').run(name);
     res.status(201).json(db.prepare('SELECT * FROM manufacturers WHERE id = ?').get(info.lastInsertRowid));
   } catch {
     res.status(400).json({ error: 'Manufacturer already exists.' });
   }
+});
+
+app.put('/api/manufacturers/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const name = String(req.body.name || '').trim();
+  if (!id || !name) return badRequest(res, 'Manufacturer id and name are required.');
+  if (!db.prepare('SELECT 1 FROM manufacturers WHERE id = ?').get(id)) return badRequest(res, 'Manufacturer not found.', 404);
+  try {
+    db.prepare('UPDATE manufacturers SET name = ? WHERE id = ?').run(name, id);
+    res.json(db.prepare('SELECT * FROM manufacturers WHERE id = ?').get(id));
+  } catch {
+    res.status(400).json({ error: 'Manufacturer already exists.' });
+  }
+});
+
+app.delete('/api/manufacturers/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return badRequest(res, 'Manufacturer id is required.');
+  const manufacturer = db.prepare('SELECT * FROM manufacturers WHERE id = ?').get(id);
+  if (!manufacturer) return badRequest(res, 'Manufacturer not found.', 404);
+  const usage = getManufacturerUsage(id);
+  if (usage.medicine_count > 0) {
+    return badRequest(res, 'Cannot delete this manufacturer because medicines are linked to it.');
+  }
+  db.prepare('DELETE FROM manufacturers WHERE id = ?').run(id);
+  res.json({ success: true });
 });
 
 app.get('/api/medicines', (req, res) => {
@@ -227,26 +319,55 @@ app.post('/api/medicines', (req, res) => {
   const form = String(req.body.form || '').trim();
   const reorderLevel = Number(req.body.reorder_level || 20);
 
-  if (!manufacturerId || !name) return res.status(400).json({ error: 'Manufacturer and medicine name are required.' });
-  if (reorderLevel < 0) return res.status(400).json({ error: 'Reorder level cannot be negative.' });
+  if (!manufacturerId || !name) return badRequest(res, 'Manufacturer and medicine name are required.');
+  if (reorderLevel < 0) return badRequest(res, 'Reorder level cannot be negative.');
 
   try {
+    ensureManufacturerExists(manufacturerId);
     const info = db.prepare(`
       INSERT INTO medicines (manufacturer_id, name, strength, form, reorder_level)
       VALUES (?, ?, ?, ?, ?)
     `).run(manufacturerId, name, strength, form, reorderLevel);
-    const row = db.prepare(`
-      SELECT ${medicineRowSelect()}
-      FROM medicines m
-      JOIN manufacturers mf ON mf.id = m.manufacturer_id
-      LEFT JOIN purchase_batches pb ON pb.medicine_id = m.id
-      WHERE m.id = ?
-      GROUP BY m.id
-    `).get(info.lastInsertRowid);
-    res.status(201).json(row);
-  } catch {
-    res.status(400).json({ error: 'Medicine already exists for this manufacturer.' });
+    res.status(201).json(getMedicineRow(info.lastInsertRowid));
+  } catch (err) {
+    res.status(400).json({ error: err.message === 'Selected manufacturer does not exist.' ? err.message : 'Medicine already exists for this manufacturer.' });
   }
+});
+
+app.put('/api/medicines/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const manufacturerId = Number(req.body.manufacturer_id);
+  const name = String(req.body.name || '').trim();
+  const strength = String(req.body.strength || '').trim();
+  const form = String(req.body.form || '').trim();
+  const reorderLevel = Number(req.body.reorder_level);
+  if (!id || !manufacturerId || !name) return badRequest(res, 'Manufacturer and medicine name are required.');
+  if (!(reorderLevel >= 0)) return badRequest(res, 'Reorder level cannot be negative.');
+  if (!db.prepare('SELECT 1 FROM medicines WHERE id = ?').get(id)) return badRequest(res, 'Medicine not found.', 404);
+  try {
+    ensureManufacturerExists(manufacturerId);
+    db.prepare(`
+      UPDATE medicines
+      SET manufacturer_id = ?, name = ?, strength = ?, form = ?, reorder_level = ?
+      WHERE id = ?
+    `).run(manufacturerId, name, strength, form, reorderLevel, id);
+    res.json(getMedicineRow(id));
+  } catch (err) {
+    res.status(400).json({ error: err.message === 'Selected manufacturer does not exist.' ? err.message : 'Another medicine with the same details already exists for that manufacturer.' });
+  }
+});
+
+app.delete('/api/medicines/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return badRequest(res, 'Medicine id is required.');
+  const medicine = db.prepare('SELECT * FROM medicines WHERE id = ?').get(id);
+  if (!medicine) return badRequest(res, 'Medicine not found.', 404);
+  const usage = getMedicineUsage(id);
+  if (usage.purchase_count > 0 || usage.sale_count > 0 || usage.writeoff_count > 0) {
+    return badRequest(res, 'Cannot delete this medicine from master data because purchases, sales, or write-offs are linked to it.');
+  }
+  db.prepare('DELETE FROM medicines WHERE id = ?').run(id);
+  res.json({ success: true });
 });
 
 app.get('/api/batches', (req, res) => {
@@ -300,27 +421,71 @@ app.get('/api/medicines/:id/discard-options', (req, res) => {
 });
 
 app.post('/api/purchases', (req, res) => {
-  const medicineId = Number(req.body.medicine_id);
-  const batchNumber = String(req.body.batch_number || '').trim();
-  const expiryDate = String(req.body.expiry_date || '').trim();
-  const purchasedOn = String(req.body.purchased_on || isoDate()).trim();
-  const costPrice = Number(req.body.cost_price);
-  const mrp = Number(req.body.mrp);
-  const quantity = Number(req.body.quantity_purchased);
-
-  if (!medicineId || !batchNumber || !expiryDate || !(costPrice > 0) || !(mrp > 0) || !(quantity > 0)) {
-    return res.status(400).json({ error: 'All purchase fields are required with valid positive values.' });
-  }
-
   try {
+    const medicineId = Number(req.body.medicine_id);
+    const batchNumber = String(req.body.batch_number || '').trim();
+    const expiryDate = String(req.body.expiry_date || '').trim();
+    const purchasedOn = String(req.body.purchased_on || isoDate()).trim();
+    const costPrice = parsePositiveNumber(req.body.cost_price, 'Cost price');
+    const mrp = parsePositiveNumber(req.body.mrp, 'MRP');
+    const quantity = parseNonNegativeInt(req.body.quantity_purchased, 'Purchased quantity');
+
+    if (!medicineId || !batchNumber || !expiryDate || quantity <= 0) {
+      return badRequest(res, 'All purchase fields are required with valid positive values.');
+    }
+    ensureMedicineExists(medicineId);
     const info = db.prepare(`
       INSERT INTO purchase_batches
       (medicine_id, batch_number, expiry_date, cost_price, mrp, quantity_purchased, quantity_available, purchased_on)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(medicineId, batchNumber, expiryDate, costPrice, mrp, quantity, quantity, purchasedOn);
     res.status(201).json(db.prepare('SELECT * FROM purchase_batches WHERE id = ?').get(info.lastInsertRowid));
-  } catch {
-    res.status(400).json({ error: 'This batch number already exists for the selected medicine.' });
+  } catch (err) {
+    res.status(400).json({ error: err.message.includes('does not exist') ? err.message : err.message || 'This batch number already exists for the selected medicine.' });
+  }
+});
+
+app.put('/api/purchases/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return badRequest(res, 'Purchase id is required.');
+  const existing = getBatch(id);
+  if (!existing) return badRequest(res, 'Purchase entry not found.', 404);
+  try {
+    checkNoBatchDependencies(id, 'edit');
+    const medicineId = Number(req.body.medicine_id);
+    const batchNumber = String(req.body.batch_number || '').trim();
+    const expiryDate = String(req.body.expiry_date || '').trim();
+    const purchasedOn = String(req.body.purchased_on || isoDate()).trim();
+    const costPrice = parsePositiveNumber(req.body.cost_price, 'Cost price');
+    const mrp = parsePositiveNumber(req.body.mrp, 'MRP');
+    const quantity = parseNonNegativeInt(req.body.quantity_purchased, 'Purchased quantity');
+
+    if (!medicineId || !batchNumber || !expiryDate || quantity <= 0) {
+      return badRequest(res, 'All purchase fields are required with valid positive values.');
+    }
+    ensureMedicineExists(medicineId);
+    db.prepare(`
+      UPDATE purchase_batches
+      SET medicine_id = ?, batch_number = ?, expiry_date = ?, cost_price = ?, mrp = ?, quantity_purchased = ?, quantity_available = ?, purchased_on = ?
+      WHERE id = ?
+    `).run(medicineId, batchNumber, expiryDate, costPrice, mrp, quantity, quantity, purchasedOn, id);
+    res.json(getBatch(id));
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Unable to update purchase entry.' });
+  }
+});
+
+app.delete('/api/purchases/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return badRequest(res, 'Purchase id is required.');
+  const batch = getBatch(id);
+  if (!batch) return badRequest(res, 'Purchase entry not found.', 404);
+  try {
+    checkNoBatchDependencies(id, 'delete');
+    db.prepare('DELETE FROM purchase_batches WHERE id = ?').run(id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -335,30 +500,79 @@ app.get('/api/purchases', (req, res) => {
 });
 
 app.post('/api/sales', (req, res) => {
-  const medicineId = Number(req.body.medicine_id);
-  const batchId = Number(req.body.batch_id);
-  const quantitySold = Number(req.body.quantity_sold);
-  const soldOn = String(req.body.sold_on || isoDate()).trim();
+  try {
+    const medicineId = Number(req.body.medicine_id);
+    const batchId = Number(req.body.batch_id);
+    const quantitySold = parseNonNegativeInt(req.body.quantity_sold, 'Sold quantity');
+    const soldOn = String(req.body.sold_on || isoDate()).trim();
 
-  if (!medicineId || !batchId || !(quantitySold > 0)) {
-    return res.status(400).json({ error: 'Medicine, batch and quantity are required.' });
+    if (!medicineId || !batchId || quantitySold <= 0) {
+      return badRequest(res, 'Medicine, batch and quantity are required.');
+    }
+    const batch = validateBatchForMedicine(batchId, medicineId);
+    if (batch.expiry_date < isoDate()) return badRequest(res, 'Expired batch cannot be sold.');
+    if (batch.quantity_available < quantitySold) return badRequest(res, 'Not enough stock in selected batch.');
+
+    const tx = db.transaction(() => {
+      db.prepare('UPDATE purchase_batches SET quantity_available = quantity_available - ? WHERE id = ?').run(quantitySold, batchId);
+      const sale = db.prepare(`
+        INSERT INTO sales (medicine_id, batch_id, quantity_sold, sold_on, unit_sale_price, unit_cost_price)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(medicineId, batchId, quantitySold, soldOn, batch.mrp, batch.cost_price);
+      return getSale(sale.lastInsertRowid);
+    });
+
+    res.status(201).json(tx());
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Unable to save sale.' });
   }
+});
 
-  const batch = db.prepare('SELECT * FROM purchase_batches WHERE id = ? AND medicine_id = ?').get(batchId, medicineId);
-  if (!batch) return res.status(404).json({ error: 'Selected batch not found.' });
-  if (batch.expiry_date < isoDate()) return res.status(400).json({ error: 'Expired batch cannot be sold.' });
-  if (batch.quantity_available < quantitySold) return res.status(400).json({ error: 'Not enough stock in selected batch.' });
+app.put('/api/sales/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return badRequest(res, 'Sale id is required.');
+  const existing = getSale(id);
+  if (!existing) return badRequest(res, 'Sale entry not found.', 404);
+  try {
+    const medicineId = Number(req.body.medicine_id);
+    const batchId = Number(req.body.batch_id);
+    const quantitySold = parseNonNegativeInt(req.body.quantity_sold, 'Sold quantity');
+    const soldOn = String(req.body.sold_on || isoDate()).trim();
+    if (!medicineId || !batchId || quantitySold <= 0) {
+      return badRequest(res, 'Medicine, batch and quantity are required.');
+    }
 
+    const tx = db.transaction(() => {
+      db.prepare('UPDATE purchase_batches SET quantity_available = quantity_available + ? WHERE id = ?').run(existing.quantity_sold, existing.batch_id);
+      const newBatch = validateBatchForMedicine(batchId, medicineId);
+      if (newBatch.expiry_date < isoDate()) throw new Error('Expired batch cannot be sold.');
+      if (newBatch.quantity_available < quantitySold) throw new Error('Not enough stock in selected batch.');
+      db.prepare('UPDATE purchase_batches SET quantity_available = quantity_available - ? WHERE id = ?').run(quantitySold, batchId);
+      db.prepare(`
+        UPDATE sales
+        SET medicine_id = ?, batch_id = ?, quantity_sold = ?, sold_on = ?, unit_sale_price = ?, unit_cost_price = ?
+        WHERE id = ?
+      `).run(medicineId, batchId, quantitySold, soldOn, newBatch.mrp, newBatch.cost_price, id);
+      return getSale(id);
+    });
+
+    res.json(tx());
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Unable to update sale.' });
+  }
+});
+
+app.delete('/api/sales/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return badRequest(res, 'Sale id is required.');
+  const sale = getSale(id);
+  if (!sale) return badRequest(res, 'Sale entry not found.', 404);
   const tx = db.transaction(() => {
-    db.prepare('UPDATE purchase_batches SET quantity_available = quantity_available - ? WHERE id = ?').run(quantitySold, batchId);
-    const sale = db.prepare(`
-      INSERT INTO sales (medicine_id, batch_id, quantity_sold, sold_on, unit_sale_price, unit_cost_price)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(medicineId, batchId, quantitySold, soldOn, batch.mrp, batch.cost_price);
-    return db.prepare('SELECT * FROM sales WHERE id = ?').get(sale.lastInsertRowid);
+    db.prepare('UPDATE purchase_batches SET quantity_available = quantity_available + ? WHERE id = ?').run(sale.quantity_sold, sale.batch_id);
+    db.prepare('DELETE FROM sales WHERE id = ?').run(id);
   });
-
-  res.status(201).json(tx());
+  tx();
+  res.json({ success: true });
 });
 
 app.get('/api/sales', (req, res) => {
@@ -376,31 +590,83 @@ app.get('/api/sales', (req, res) => {
 });
 
 app.post('/api/write-offs', (req, res) => {
-  const medicineId = Number(req.body.medicine_id);
-  const batchId = Number(req.body.batch_id);
-  const quantityDiscarded = Number(req.body.quantity_discarded);
-  const discardedOn = String(req.body.discarded_on || isoDate()).trim();
-  const reason = String(req.body.reason || '').trim();
-  const notes = String(req.body.notes || '').trim();
+  try {
+    const medicineId = Number(req.body.medicine_id);
+    const batchId = Number(req.body.batch_id);
+    const quantityDiscarded = parseNonNegativeInt(req.body.quantity_discarded, 'Discard quantity');
+    const discardedOn = String(req.body.discarded_on || isoDate()).trim();
+    const reason = String(req.body.reason || '').trim();
+    const notes = String(req.body.notes || '').trim();
 
-  if (!medicineId || !batchId || !(quantityDiscarded > 0) || !reason) {
-    return res.status(400).json({ error: 'Medicine, batch, quantity and reason are required.' });
+    if (!medicineId || !batchId || quantityDiscarded <= 0 || !reason) {
+      return badRequest(res, 'Medicine, batch, quantity and reason are required.');
+    }
+
+    const batch = validateBatchForMedicine(batchId, medicineId);
+    if (batch.quantity_available < quantityDiscarded) return badRequest(res, 'Not enough available stock in selected batch.');
+
+    const tx = db.transaction(() => {
+      db.prepare('UPDATE purchase_batches SET quantity_available = quantity_available - ? WHERE id = ?').run(quantityDiscarded, batchId);
+      const info = db.prepare(`
+        INSERT INTO write_offs (medicine_id, batch_id, quantity_discarded, discarded_on, reason, notes, unit_cost_price)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(medicineId, batchId, quantityDiscarded, discardedOn, reason, notes, batch.cost_price);
+      return getWriteoff(info.lastInsertRowid);
+    });
+
+    res.status(201).json(tx());
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Unable to save write-off.' });
   }
+});
 
-  const batch = db.prepare('SELECT * FROM purchase_batches WHERE id = ? AND medicine_id = ?').get(batchId, medicineId);
-  if (!batch) return res.status(404).json({ error: 'Selected batch not found.' });
-  if (batch.quantity_available < quantityDiscarded) return res.status(400).json({ error: 'Not enough available stock in selected batch.' });
+app.put('/api/write-offs/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return badRequest(res, 'Write-off id is required.');
+  const existing = getWriteoff(id);
+  if (!existing) return badRequest(res, 'Write-off entry not found.', 404);
+  try {
+    const medicineId = Number(req.body.medicine_id);
+    const batchId = Number(req.body.batch_id);
+    const quantityDiscarded = parseNonNegativeInt(req.body.quantity_discarded, 'Discard quantity');
+    const discardedOn = String(req.body.discarded_on || isoDate()).trim();
+    const reason = String(req.body.reason || '').trim();
+    const notes = String(req.body.notes || '').trim();
 
+    if (!medicineId || !batchId || quantityDiscarded <= 0 || !reason) {
+      return badRequest(res, 'Medicine, batch, quantity and reason are required.');
+    }
+
+    const tx = db.transaction(() => {
+      db.prepare('UPDATE purchase_batches SET quantity_available = quantity_available + ? WHERE id = ?').run(existing.quantity_discarded, existing.batch_id);
+      const newBatch = validateBatchForMedicine(batchId, medicineId);
+      if (newBatch.quantity_available < quantityDiscarded) throw new Error('Not enough available stock in selected batch.');
+      db.prepare('UPDATE purchase_batches SET quantity_available = quantity_available - ? WHERE id = ?').run(quantityDiscarded, batchId);
+      db.prepare(`
+        UPDATE write_offs
+        SET medicine_id = ?, batch_id = ?, quantity_discarded = ?, discarded_on = ?, reason = ?, notes = ?, unit_cost_price = ?
+        WHERE id = ?
+      `).run(medicineId, batchId, quantityDiscarded, discardedOn, reason, notes, newBatch.cost_price, id);
+      return getWriteoff(id);
+    });
+
+    res.json(tx());
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Unable to update write-off.' });
+  }
+});
+
+app.delete('/api/write-offs/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return badRequest(res, 'Write-off id is required.');
+  const writeoff = getWriteoff(id);
+  if (!writeoff) return badRequest(res, 'Write-off entry not found.', 404);
   const tx = db.transaction(() => {
-    db.prepare('UPDATE purchase_batches SET quantity_available = quantity_available - ? WHERE id = ?').run(quantityDiscarded, batchId);
-    const info = db.prepare(`
-      INSERT INTO write_offs (medicine_id, batch_id, quantity_discarded, discarded_on, reason, notes, unit_cost_price)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(medicineId, batchId, quantityDiscarded, discardedOn, reason, notes, batch.cost_price);
-    return db.prepare('SELECT * FROM write_offs WHERE id = ?').get(info.lastInsertRowid);
+    db.prepare('UPDATE purchase_batches SET quantity_available = quantity_available + ? WHERE id = ?').run(writeoff.quantity_discarded, writeoff.batch_id);
+    db.prepare('DELETE FROM write_offs WHERE id = ?').run(id);
   });
-
-  res.status(201).json(tx());
+  tx();
+  res.json({ success: true });
 });
 
 app.get('/api/write-offs', (req, res) => {
@@ -519,8 +785,8 @@ app.get('/api/dashboard', (req, res) => {
 app.get('/api/reports/profit', (req, res) => {
   const from = String(req.query.from || '').trim();
   const to = String(req.query.to || '').trim();
-  if (!from || !to) return res.status(400).json({ error: 'From and to dates are required.' });
-  if (from > to) return res.status(400).json({ error: 'From date cannot be after to date.' });
+  if (!from || !to) return badRequest(res, 'From and to dates are required.');
+  if (from > to) return badRequest(res, 'From date cannot be after to date.');
 
   const summary = getKpi(from, to);
   const byMedicine = db.prepare(`

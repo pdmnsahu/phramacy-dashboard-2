@@ -31,3 +31,11 @@ http://localhost:3000
 - The app auto-creates the `data/` folder and SQLite database on first run.
 - SQLite is fine for a small single-store setup.
 - For production use across multiple counters or stores, move to PostgreSQL and add authentication, backups, billing, and audit logs.
+
+
+## Edit/Delete rules
+- Sale delete restores stock to the original batch.
+- Write-off delete restores stock to the original batch.
+- Purchase batch edit/delete is blocked once a sale or write-off is linked to that batch.
+- Medicine delete is blocked once purchases, sales, or write-offs are linked.
+- Manufacturer delete is blocked once medicines are linked.
